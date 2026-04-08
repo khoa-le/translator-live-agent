@@ -212,16 +212,62 @@ PERFORMANCE_PROFILE=meeting   # optimized for calls (default)
 PERFORMANCE_PROFILE=default   # standard settings
 ```
 
+## Streaming Transcripts
+
+While the agent runs, you get **real-time text output** — no need to wait for the full sentence:
+
+```
+[听] こんにちは...              ← partial source (as speaker talks)
+[源] こんにちは                 ← final source (speech ended)
+  ⋯ translating...
+[翻] Xin chào                  ← final translation
+──────────────────────────────────────────────────
+```
+
+This shows in the terminal automatically.
+
+### WebSocket API for Flutter/web clients
+
+A WebSocket server runs on `ws://localhost:8765` (configurable via `TRANSCRIPT_PORT`).
+
+Connect and receive JSON events:
+
+```json
+{"type": "partial_input",  "text": "こんにちは...", "is_final": false}
+{"type": "final_input",    "text": "こんにちは",    "is_final": true}
+{"type": "state",          "agent": "thinking"}
+{"type": "final_output",   "text": "Xin chào",     "is_final": true}
+{"type": "turn_complete"}
+```
+
+Test with wscat:
+
+```bash
+npx wscat -c ws://localhost:8765
+```
+
+### Event types
+
+| Type | Description |
+|------|-------------|
+| `partial_input` | Source language text (in progress, updates as speaker talks) |
+| `final_input` | Source language text (confirmed, speech ended) |
+| `partial_output` | Translation text (in progress) |
+| `final_output` | Translation text (confirmed) |
+| `state` | Agent state: `listening`, `thinking`, `speaking` |
+| `turn_complete` | One translation turn finished |
+
 ## Project Structure
 
 ```
 translator-live-agent/
-├── agent.py           # Entry point — session factory + LiveKit agent server
-├── prompt.py          # Translation prompt builder (domain, glossary, language notes)
-├── setup_audio.py     # BlackHole audio setup checker and guide
-├── pyproject.toml     # Dependencies
-├── .env               # Configuration (gitignored)
-└── .env.example       # Configuration template
+├── agent.py              # Entry point — session factory + transcript hooks
+├── prompt.py             # Translation prompt builder (domain, glossary, language notes)
+├── transcript_server.py  # WebSocket server for streaming transcripts + terminal display
+├── setup_audio.py        # BlackHole audio setup checker and guide
+├── pyproject.toml        # Dependencies
+├── .env                  # Configuration (gitignored)
+└── .env.example          # Configuration template
 ```
 
 ## Architecture

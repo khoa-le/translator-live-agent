@@ -12,6 +12,10 @@ Run modes:
   python agent.py dev                               # dev mode with hot reload
   python agent.py start                             # production worker
 
+Streaming transcripts:
+  While running, partial transcripts display in the terminal.
+  A WebSocket server on ws://localhost:8765 streams them for Flutter/web clients.
+
 Meeting setup:
   1. brew install blackhole-2ch
   2. Set Zoom/Teams speaker → BlackHole 2ch, mic → BlackHole 2ch
@@ -19,6 +23,7 @@ Meeting setup:
   See setup_audio.py for full guide.
 """
 
+import asyncio
 import logging
 import os
 
@@ -28,6 +33,7 @@ from livekit.plugins import silero, google, openai
 from google.genai import types
 
 from prompt import build_realtime_instructions
+from transcript_server import broadcast, start_server as start_transcript_server
 
 load_dotenv()
 logger = logging.getLogger("translator")
@@ -41,9 +47,9 @@ MODE = os.getenv("TRANSLATION_MODE", "realtime_gemini")
 DOMAIN = os.getenv("TRANSLATION_DOMAIN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TRANSCRIPT_PORT = int(os.getenv("TRANSCRIPT_PORT", "8765"))
 
 # Performance profile: "default" or "meeting"
-# Meeting mode uses tighter VAD and faster endpointing for multi-speaker calls
 PROFILE = os.getenv("PERFORMANCE_PROFILE", "meeting")
 
 
@@ -52,7 +58,6 @@ PROFILE = os.getenv("PERFORMANCE_PROFILE", "meeting")
 def create_vad():
     """Create Silero VAD with profile-based tuning."""
     if PROFILE == "meeting":
-        # Meeting-optimized: faster detection, tighter silence window
         return silero.VAD.load(
             min_speech_duration=0.03,
             min_silence_duration=0.40,
@@ -61,7 +66,6 @@ def create_vad():
             sample_rate=16000,
             force_cpu=True,
         )
-    # Default: standard settings
     return silero.VAD.load(force_cpu=True)
 
 
@@ -88,11 +92,7 @@ def _meeting_turn_handling() -> dict:
 # ── Realtime Gemini mode ────────────────────────────────────────────────────
 
 def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
-    """Create session using Gemini Live API (audio-in → audio-out).
-
-    Single model handles STT + translation + TTS in one pass.
-    Requires only GOOGLE_API_KEY.
-    """
+    """Gemini Live API — audio-in → audio-out in one pass."""
     model = google.realtime.RealtimeModel(
         model="gemini-3.1-flash-live-preview",
         voice="Aoede",
@@ -119,10 +119,7 @@ def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
 # ── Realtime OpenAI mode ────────────────────────────────────────────────────
 
 def create_realtime_openai_session() -> tuple[AgentSession, Agent]:
-    """Create session using OpenAI Realtime API (audio-in → audio-out).
-
-    Requires OPENAI_API_KEY.
-    """
+    """OpenAI Realtime API — audio-in → audio-out."""
     model = openai.realtime.RealtimeModel(
         model="gpt-4o-realtime-preview",
         voice="alloy",
@@ -152,6 +149,70 @@ SESSION_FACTORIES = {
 }
 
 
+# ── Transcript event hooks ───────────────────────────────────────────────────
+
+def attach_transcript_hooks(session: AgentSession) -> None:
+    """Wire up AgentSession events to the transcript broadcast system.
+
+    Events flow:
+      user speaks → user_input_transcribed (partial/final source text)
+      agent state → agent_state_changed (listening/thinking/speaking)
+      turn done   → conversation_item_added (final output text)
+    """
+    # Track output text accumulation for partial output streaming
+    output_text_acc = {"text": ""}
+
+    # ── Source language: what the speaker said ────────────────────────────
+    @session.on("user_input_transcribed")
+    def on_user_transcript(event):
+        text = event.transcript
+        is_final = event.is_final
+        if text:
+            broadcast({
+                "type": "final_input" if is_final else "partial_input",
+                "text": text,
+                "is_final": is_final,
+            })
+
+    # ── Agent state changes ──────────────────────────────────────────────
+    @session.on("agent_state_changed")
+    def on_agent_state(event):
+        broadcast({
+            "type": "state",
+            "agent": event.new_state,
+        })
+        # Reset output accumulator when agent starts speaking
+        if event.new_state == "speaking":
+            output_text_acc["text"] = ""
+
+    # ── Target language: translation output ──────────────────────────────
+    @session.on("conversation_item_added")
+    def on_conversation_item(event):
+        msg = event.item
+        role = getattr(msg, "role", None)
+        if role == "assistant":
+            content = msg.content if hasattr(msg, "content") else []
+            text = " ".join(
+                getattr(c, "text", "") or ""
+                for c in content
+                if hasattr(c, "text")
+            )
+            if text:
+                broadcast({
+                    "type": "final_output",
+                    "text": text,
+                    "is_final": True,
+                })
+                broadcast({"type": "turn_complete"})
+
+    # ── Usage tracking ───────────────────────────────────────────────────
+    @session.on("session_usage_updated")
+    def on_usage(event):
+        usage = event.usage
+        if hasattr(usage, "input_audio_duration") and usage.input_audio_duration:
+            logger.debug("Usage: input_audio=%.1fs", usage.input_audio_duration)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 server = AgentServer()
@@ -164,6 +225,9 @@ async def entrypoint(ctx: JobContext):
         SOURCE, TARGET, MODE, PROFILE,
     )
 
+    # Start transcript WebSocket server in background
+    asyncio.create_task(start_transcript_server(port=TRANSCRIPT_PORT))
+
     await ctx.connect()
 
     factory = SESSION_FACTORIES.get(MODE)
@@ -175,17 +239,8 @@ async def entrypoint(ctx: JobContext):
 
     session, agent = factory()
 
-    # Log transcript events for debugging
-    @session.on("conversation_item_added")
-    def on_item(event):
-        msg = event.item
-        role = getattr(msg, "role", "unknown")
-        content = msg.content if hasattr(msg, "content") else []
-        text = " ".join(
-            getattr(c, "text", "") or "" for c in content if hasattr(c, "text")
-        )
-        if text:
-            logger.info("[%s] %s", role, text[:120])
+    # Attach transcript streaming hooks
+    attach_transcript_hooks(session)
 
     await session.start(
         agent=agent,

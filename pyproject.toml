@@ -20,4 +20,4 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["agent", "prompt"]
+py-modules = ["agent", "prompt", "transcript_server", "setup_audio"]
