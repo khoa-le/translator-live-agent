@@ -16,7 +16,7 @@ The agent uses end-to-end realtime models where a single API call handles speech
 
 | Mode | Provider | Latency | API Key Required |
 |------|----------|---------|------------------|
-| `realtime_gemini` | Gemini 2.0 Flash Live | Lowest | `GOOGLE_API_KEY` |
+| `realtime_gemini` | Gemini 3.1 Flash Live | Lowest | `GOOGLE_API_KEY` |
 | `realtime_openai` | GPT-4o Realtime | Low | `OPENAI_API_KEY` |
 
 ## Prerequisites
@@ -110,6 +110,7 @@ All settings are in `.env`:
 | `LIVEKIT_URL` | `ws://localhost:7880` | LiveKit server URL (dev/start modes) |
 | `LIVEKIT_API_KEY` | `devkey` | LiveKit API key (dev/start modes) |
 | `LIVEKIT_API_SECRET` | `secret` | LiveKit API secret (dev/start modes) |
+| `PERFORMANCE_PROFILE` | `meeting` | `meeting` (fast) or `default` (standard) |
 
 ### Domain context
 
@@ -136,12 +137,88 @@ SOURCE_LANGUAGE=Korean
 TARGET_LANGUAGE=Vietnamese
 ```
 
+## Meeting Translation (Zoom/Teams/Discord)
+
+Translate any meeting in real-time by routing audio through BlackHole virtual audio.
+
+### Audio flow
+
+```
+Meeting speaker → BlackHole → Agent (translate) → BlackHole → Meeting mic
+                                    ↘ Your speakers (via Multi-Output Device)
+```
+
+### Setup
+
+#### 1. Install BlackHole
+
+```bash
+brew install blackhole-2ch
+```
+
+Or download from https://existential.audio/blackhole/
+
+#### 2. Create a Multi-Output Device (so you hear both original + translation)
+
+- Open `/Applications/Utilities/Audio MIDI Setup.app`
+- Click `+` at bottom-left → "Create Multi-Output Device"
+- Check: `BlackHole 2ch` + your speakers (e.g. "Mac mini Speakers")
+- Right-click → rename to "Translation Output"
+
+#### 3. Configure your meeting app
+
+| Setting | Value |
+|---------|-------|
+| Speaker / Audio Output | BlackHole 2ch |
+| Microphone / Audio Input | BlackHole 2ch |
+
+This sends meeting audio to the agent and receives translated audio back.
+
+#### 4. Set macOS system output
+
+System Settings → Sound → Output → **Translation Output**
+
+This lets you hear both the original meeting audio and the translated audio.
+
+#### 5. Run the agent
+
+```bash
+python agent.py console --input-device "BlackHole" --output-device "BlackHole"
+```
+
+Or run the guided setup first:
+
+```bash
+python setup_audio.py
+```
+
+### Meeting performance profile
+
+The `meeting` profile (default) optimizes for multi-speaker calls:
+
+| Setting | Default | Meeting |
+|---------|---------|---------|
+| VAD silence detection | 0.55s | 0.40s |
+| VAD speech threshold | 0.50 | 0.55 |
+| Endpointing min delay | 0.5s | 0.3s |
+| Endpointing max delay | 3.0s | 2.0s |
+| AEC warmup | 3.0s | 1.0s |
+| Preemptive generation | on | on |
+
+Set in `.env`:
+
+```env
+PERFORMANCE_PROFILE=meeting   # optimized for calls (default)
+PERFORMANCE_PROFILE=default   # standard settings
+```
+
 ## Project Structure
 
 ```
 translator-live-agent/
 ├── agent.py           # Entry point — session factory + LiveKit agent server
 ├── prompt.py          # Translation prompt builder (domain, glossary, language notes)
+├── setup_audio.py     # BlackHole audio setup checker and guide
 ├── pyproject.toml     # Dependencies
 ├── .env               # Configuration (gitignored)
 └── .env.example       # Configuration template

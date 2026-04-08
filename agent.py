@@ -1,14 +1,22 @@
 """
 agent.py — LiveKit Agents entry point for real-time translation.
 
-Supports two modes:
+Supports two translation modes:
   realtime_gemini — Gemini Live end-to-end audio (default, lowest latency)
   realtime_openai — OpenAI Realtime end-to-end audio
 
-Run:
-  python agent.py console   # local mic/speaker, no LiveKit server needed
-  python agent.py dev       # dev mode with hot reload
-  python agent.py start     # production worker
+Run modes:
+  python agent.py console                          # local mic/speaker
+  python agent.py console --input-device "BlackHole" --output-device "BlackHole"
+                                                    # meeting translation via BlackHole
+  python agent.py dev                               # dev mode with hot reload
+  python agent.py start                             # production worker
+
+Meeting setup:
+  1. brew install blackhole-2ch
+  2. Set Zoom/Teams speaker → BlackHole 2ch, mic → BlackHole 2ch
+  3. python agent.py console --input-device "BlackHole" --output-device "BlackHole"
+  See setup_audio.py for full guide.
 """
 
 import logging
@@ -34,26 +42,72 @@ DOMAIN = os.getenv("TRANSLATION_DOMAIN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# Performance profile: "default" or "meeting"
+# Meeting mode uses tighter VAD and faster endpointing for multi-speaker calls
+PROFILE = os.getenv("PERFORMANCE_PROFILE", "meeting")
 
-# ── Realtime Gemini mode: end-to-end audio ──────────────────────────────────
+
+# ── VAD factory ──────────────────────────────────────────────────────────────
+
+def create_vad():
+    """Create Silero VAD with profile-based tuning."""
+    if PROFILE == "meeting":
+        # Meeting-optimized: faster detection, tighter silence window
+        return silero.VAD.load(
+            min_speech_duration=0.03,
+            min_silence_duration=0.40,
+            activation_threshold=0.55,
+            prefix_padding_duration=0.3,
+            sample_rate=16000,
+            force_cpu=True,
+        )
+    # Default: standard settings
+    return silero.VAD.load(force_cpu=True)
+
+
+# ── Session factory helpers ──────────────────────────────────────────────────
+
+def _meeting_turn_handling() -> dict:
+    """Turn handling config optimized for meeting translation."""
+    if PROFILE != "meeting":
+        return {}
+    return {
+        "turn_detection": "vad",
+        "endpointing": {
+            "min_delay": 0.3,
+            "max_delay": 2.0,
+        },
+        "interruption": {
+            "enabled": True,
+            "mode": "vad",
+            "min_duration": 0.3,
+        },
+    }
+
+
+# ── Realtime Gemini mode ────────────────────────────────────────────────────
 
 def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
     """Create session using Gemini Live API (audio-in → audio-out).
 
     Single model handles STT + translation + TTS in one pass.
-    Requires only GOOGLE_API_KEY (no service account needed).
+    Requires only GOOGLE_API_KEY.
     """
     model = google.realtime.RealtimeModel(
-        model="gemini-2.0-flash-live-001",
+        model="gemini-3.1-flash-live-preview",
         voice="Aoede",
         api_key=GOOGLE_API_KEY,
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
+    turn_handling = _meeting_turn_handling()
     session = AgentSession(
         llm=model,
-        vad=silero.VAD.load(),
+        vad=create_vad(),
+        preemptive_generation=True,
+        aec_warmup_duration=1.0 if PROFILE == "meeting" else 3.0,
+        **({"turn_handling": turn_handling} if turn_handling else {}),
     )
 
     instructions = build_realtime_instructions(SOURCE, TARGET, domain=DOMAIN)
@@ -62,7 +116,7 @@ def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
     return session, agent
 
 
-# ── Realtime OpenAI mode: end-to-end audio ──────────────────────────────────
+# ── Realtime OpenAI mode ────────────────────────────────────────────────────
 
 def create_realtime_openai_session() -> tuple[AgentSession, Agent]:
     """Create session using OpenAI Realtime API (audio-in → audio-out).
@@ -75,9 +129,13 @@ def create_realtime_openai_session() -> tuple[AgentSession, Agent]:
         api_key=OPENAI_API_KEY,
     )
 
+    turn_handling = _meeting_turn_handling()
     session = AgentSession(
         llm=model,
-        vad=silero.VAD.load(),
+        vad=create_vad(),
+        preemptive_generation=True,
+        aec_warmup_duration=1.0 if PROFILE == "meeting" else 3.0,
+        **({"turn_handling": turn_handling} if turn_handling else {}),
     )
 
     instructions = build_realtime_instructions(SOURCE, TARGET, domain=DOMAIN)
@@ -101,7 +159,10 @@ server = AgentServer()
 
 @server.rtc_session()
 async def entrypoint(ctx: JobContext):
-    logger.info("Starting translation agent: %s → %s (mode=%s)", SOURCE, TARGET, MODE)
+    logger.info(
+        "Starting translation: %s → %s (mode=%s, profile=%s)",
+        SOURCE, TARGET, MODE, PROFILE,
+    )
 
     await ctx.connect()
 
