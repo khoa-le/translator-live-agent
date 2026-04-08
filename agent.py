@@ -116,8 +116,15 @@ async def entrypoint(ctx: JobContext):
 
     # Log transcript events for debugging
     @session.on("conversation_item_added")
-    def on_item(item):
-        logger.info("[%s] %s", item.role, getattr(item, "text", "")[:120])
+    def on_item(event):
+        msg = event.item
+        role = getattr(msg, "role", "unknown")
+        content = msg.content if hasattr(msg, "content") else []
+        text = " ".join(
+            getattr(c, "text", "") or "" for c in content if hasattr(c, "text")
+        )
+        if text:
+            logger.info("[%s] %s", role, text[:120])
 
     await session.start(
         agent=agent,
