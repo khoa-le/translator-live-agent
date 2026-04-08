@@ -1,9 +1,8 @@
 """
 agent.py — LiveKit Agents entry point for real-time translation.
 
-Supports three modes:
-  pipeline        — STT → LLM (translate) → TTS  (most flexible)
-  realtime_gemini — Gemini Live end-to-end audio   (lowest latency)
+Supports two modes:
+  realtime_gemini — Gemini Live end-to-end audio (default, lowest latency)
   realtime_openai — OpenAI Realtime end-to-end audio
 
 Run:
@@ -17,10 +16,10 @@ import os
 
 from dotenv import load_dotenv
 from livekit.agents import AgentServer, AgentSession, Agent, JobContext, cli, RoomInputOptions
-from livekit.agents import inference
-from livekit.plugins import silero
+from livekit.plugins import silero, google, openai
+from google.genai import types
 
-from prompt import build_translation_instructions, build_realtime_instructions
+from prompt import build_realtime_instructions
 
 load_dotenv()
 logger = logging.getLogger("translator")
@@ -30,56 +29,20 @@ logging.basicConfig(level=logging.INFO)
 
 SOURCE = os.getenv("SOURCE_LANGUAGE", "Japanese")
 TARGET = os.getenv("TARGET_LANGUAGE", "Vietnamese")
-MODE = os.getenv("TRANSLATION_MODE", "pipeline")
+MODE = os.getenv("TRANSLATION_MODE", "realtime_gemini")
 DOMAIN = os.getenv("TRANSLATION_DOMAIN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
-# ── Pipeline mode: STT → LLM → TTS ─────────────────────────────────────────
-
-def create_pipeline_session() -> tuple[AgentSession, Agent]:
-    """Create session using discrete STT + LLM + TTS pipeline.
-
-    STT transcribes source language, LLM translates text, TTS speaks it.
-    """
-    stt = inference.STT(
-        "google/gemini-2.0-flash",
-        language=SOURCE,
-        api_key=GOOGLE_API_KEY,
-    )
-
-    llm = inference.LLM(
-        "google/gemini-2.0-flash",
-        api_key=GOOGLE_API_KEY,
-    )
-
-    tts = inference.TTS(
-        "google/gemini-2.0-flash",
-        language=TARGET,
-        api_key=GOOGLE_API_KEY,
-    )
-
-    session = AgentSession(
-        stt=stt,
-        llm=llm,
-        tts=tts,
-        vad=silero.VAD.load(),
-    )
-
-    instructions = build_translation_instructions(SOURCE, TARGET, domain=DOMAIN)
-    agent = Agent(instructions=instructions)
-
-    return session, agent
-
-
 # ── Realtime Gemini mode: end-to-end audio ──────────────────────────────────
 
 def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
-    """Create session using Gemini Live API (audio-in → audio-out)."""
-    from livekit.plugins import google
-    from google.genai import types
+    """Create session using Gemini Live API (audio-in → audio-out).
 
+    Single model handles STT + translation + TTS in one pass.
+    Requires only GOOGLE_API_KEY (no service account needed).
+    """
     model = google.realtime.RealtimeModel(
         model="gemini-2.0-flash-live-001",
         voice="Aoede",
@@ -102,9 +65,10 @@ def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
 # ── Realtime OpenAI mode: end-to-end audio ──────────────────────────────────
 
 def create_realtime_openai_session() -> tuple[AgentSession, Agent]:
-    """Create session using OpenAI Realtime API (audio-in → audio-out)."""
-    from livekit.plugins import openai
+    """Create session using OpenAI Realtime API (audio-in → audio-out).
 
+    Requires OPENAI_API_KEY.
+    """
     model = openai.realtime.RealtimeModel(
         model="gpt-4o-realtime-preview",
         voice="alloy",
@@ -125,7 +89,6 @@ def create_realtime_openai_session() -> tuple[AgentSession, Agent]:
 # ── Session factory ──────────────────────────────────────────────────────────
 
 SESSION_FACTORIES = {
-    "pipeline": create_pipeline_session,
     "realtime_gemini": create_realtime_gemini_session,
     "realtime_openai": create_realtime_openai_session,
 }
