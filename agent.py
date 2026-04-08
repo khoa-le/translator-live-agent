@@ -94,8 +94,8 @@ def _meeting_turn_handling() -> dict:
 def create_realtime_gemini_session() -> tuple[AgentSession, Agent]:
     """Gemini Live API — audio-in → audio-out in one pass."""
     model = google.realtime.RealtimeModel(
-        model="gemini-3.1-flash-live-preview",
-        voice="Aoede",
+        model="gemini-2.5-flash-native-audio-preview-12-2025",
+        voice="Puck",
         api_key=GOOGLE_API_KEY,
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),

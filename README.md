@@ -16,7 +16,7 @@ The agent uses end-to-end realtime models where a single API call handles speech
 
 | Mode | Provider | Latency | API Key Required |
 |------|----------|---------|------------------|
-| `realtime_gemini` | Gemini 3.1 Flash Live | Lowest | `GOOGLE_API_KEY` |
+| `realtime_gemini` | Gemini 2.5 Flash Native Audio | Lowest | `GOOGLE_API_KEY` |
 | `realtime_openai` | GPT-4o Realtime | Low | `OPENAI_API_KEY` |
 
 ## Prerequisites
