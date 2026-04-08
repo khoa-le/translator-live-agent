@@ -1,0 +1,23 @@
+[project]
+name = "translator-live-agent"
+version = "0.1.0"
+description = "Real-time live speech translation agent built on LiveKit Agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "livekit-agents[codecs]~=1.4",
+    "livekit-plugins-silero~=1.4",
+    "livekit-plugins-google~=1.4",
+    "livekit-plugins-openai~=1.4",
+    "livekit-plugins-turn-detector~=1.4",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools]
+py-modules = ["agent", "prompt"]
