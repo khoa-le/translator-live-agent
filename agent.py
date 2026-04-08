@@ -13,8 +13,8 @@ Run modes:
   python agent.py start                             # production worker
 
 Streaming transcripts:
-  While running, partial transcripts display in the terminal.
-  A WebSocket server on ws://localhost:8765 streams them for Flutter/web clients.
+  Partial source + translation text streams to terminal in real-time.
+  WebSocket on ws://localhost:8765 for Flutter/web clients.
 
 Meeting setup:
   1. brew install blackhole-2ch
@@ -152,17 +152,14 @@ SESSION_FACTORIES = {
 # ── Transcript event hooks ───────────────────────────────────────────────────
 
 def attach_transcript_hooks(session: AgentSession) -> None:
-    """Wire up AgentSession events to the transcript broadcast system.
+    """Wire up AgentSession events to stream transcripts in real-time.
 
-    Events flow:
-      user speaks → user_input_transcribed (partial/final source text)
-      agent state → agent_state_changed (listening/thinking/speaking)
-      turn done   → conversation_item_added (final output text)
+    Source text:  user_input_transcribed → partial/final as speaker talks
+    Translation:  Hook into realtime model's generation text_stream for
+                  word-by-word output — does NOT wait for turn to finish.
     """
-    # Track output text accumulation for partial output streaming
-    output_text_acc = {"text": ""}
 
-    # ── Source language: what the speaker said ────────────────────────────
+    # ── Source language: partial + final as speaker talks ─────────────
     @session.on("user_input_transcribed")
     def on_user_transcript(event):
         text = event.transcript
@@ -174,43 +171,67 @@ def attach_transcript_hooks(session: AgentSession) -> None:
                 "is_final": is_final,
             })
 
-    # ── Agent state changes ──────────────────────────────────────────────
+    # ── Agent state changes ──────────────────────────────────────────
     @session.on("agent_state_changed")
     def on_agent_state(event):
         broadcast({
             "type": "state",
             "agent": event.new_state,
         })
-        # Reset output accumulator when agent starts speaking
-        if event.new_state == "speaking":
-            output_text_acc["text"] = ""
 
-    # ── Target language: translation output ──────────────────────────────
-    @session.on("conversation_item_added")
-    def on_conversation_item(event):
-        msg = event.item
-        role = getattr(msg, "role", None)
-        if role == "assistant":
-            content = msg.content if hasattr(msg, "content") else []
-            text = " ".join(
-                getattr(c, "text", "") or ""
-                for c in content
-                if hasattr(c, "text")
-            )
-            if text:
+    # ── Translation output: stream word-by-word from generation ──────
+    # Hook into the realtime session's generation_created event to read
+    # output text as it streams — this fires for each text chunk from
+    # the model, not waiting for the full sentence.
+
+    async def _stream_generation_text(gen_event):
+        """Read text_stream from each generation and broadcast chunks."""
+        async for msg_gen in gen_event.message_stream:
+            accumulated = ""
+            async for chunk in msg_gen.text_stream:
+                if chunk:
+                    accumulated += chunk
+                    broadcast({
+                        "type": "partial_output",
+                        "text": accumulated,
+                        "is_final": False,
+                    })
+            # Generation done — send final
+            if accumulated:
                 broadcast({
                     "type": "final_output",
-                    "text": text,
+                    "text": accumulated,
                     "is_final": True,
                 })
                 broadcast({"type": "turn_complete"})
 
-    # ── Usage tracking ───────────────────────────────────────────────────
-    @session.on("session_usage_updated")
-    def on_usage(event):
-        usage = event.usage
-        if hasattr(usage, "input_audio_duration") and usage.input_audio_duration:
-            logger.debug("Usage: input_audio=%.1fs", usage.input_audio_duration)
+    def _on_generation_created(gen_event):
+        asyncio.create_task(_stream_generation_text(gen_event))
+
+    # We attach this after session.start() when the realtime session exists
+    session._generation_created_handler = _on_generation_created
+
+
+def attach_realtime_hooks(session: AgentSession) -> None:
+    """Attach hooks to the internal realtime session after it's created.
+
+    Must be called after session.start() so _activity._rt_session exists.
+    """
+    handler = getattr(session, "_generation_created_handler", None)
+    if not handler:
+        return
+
+    activity = getattr(session, "_activity", None)
+    if activity is None:
+        return
+
+    rt_session = getattr(activity, "_rt_session", None)
+    if rt_session is None:
+        logger.warning("No realtime session found — output streaming unavailable")
+        return
+
+    rt_session.on("generation_created", handler)
+    logger.info("Realtime output text streaming attached")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -239,7 +260,7 @@ async def entrypoint(ctx: JobContext):
 
     session, agent = factory()
 
-    # Attach transcript streaming hooks
+    # Attach transcript hooks (session-level events)
     attach_transcript_hooks(session)
 
     await session.start(
@@ -247,6 +268,11 @@ async def entrypoint(ctx: JobContext):
         room=ctx.room,
         room_input_options=RoomInputOptions(),
     )
+
+    # After start, attach to the realtime model's text stream
+    # Small delay to let the activity initialize
+    await asyncio.sleep(0.5)
+    attach_realtime_hooks(session)
 
 
 if __name__ == "__main__":

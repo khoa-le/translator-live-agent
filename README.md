@@ -214,17 +214,18 @@ PERFORMANCE_PROFILE=default   # standard settings
 
 ## Streaming Transcripts
 
-While the agent runs, you get **real-time text output** — no need to wait for the full sentence:
+Both source and translation text stream **word-by-word** — no waiting for the speaker to finish:
 
 ```
-[听] こんにちは...              ← partial source (as speaker talks)
-[源] こんにちは                 ← final source (speech ended)
-  ⋯ translating...
-[翻] Xin chào                  ← final translation
+[听] 関係をした方が...          ← partial source (while speaking)
+[源] 関係をした方がいいと思う    ← final source (speech ended)
+[译] Tôi nghĩ nên...           ← partial translation (streaming)
+[译] Tôi nghĩ nên cải thiện... ← more translation arrives
+[翻] Tôi nghĩ nên cải thiện mối quan hệ  ← final
 ──────────────────────────────────────────────────
 ```
 
-This shows in the terminal automatically.
+This shows in the terminal automatically. Translation text appears as the model generates it, not after the full sentence.
 
 ### WebSocket API for Flutter/web clients
 
@@ -233,10 +234,11 @@ A WebSocket server runs on `ws://localhost:8765` (configurable via `TRANSCRIPT_P
 Connect and receive JSON events:
 
 ```json
-{"type": "partial_input",  "text": "こんにちは...", "is_final": false}
-{"type": "final_input",    "text": "こんにちは",    "is_final": true}
-{"type": "state",          "agent": "thinking"}
-{"type": "final_output",   "text": "Xin chào",     "is_final": true}
+{"type": "partial_input",  "text": "関係をした方が...",  "is_final": false}
+{"type": "final_input",    "text": "関係をした方がいい", "is_final": true}
+{"type": "partial_output", "text": "Tôi nghĩ nên",      "is_final": false}
+{"type": "partial_output", "text": "Tôi nghĩ nên cải",  "is_final": false}
+{"type": "final_output",   "text": "Tôi nghĩ nên cải thiện mối quan hệ", "is_final": true}
 {"type": "turn_complete"}
 ```
 
@@ -250,10 +252,10 @@ npx wscat -c ws://localhost:8765
 
 | Type | Description |
 |------|-------------|
-| `partial_input` | Source language text (in progress, updates as speaker talks) |
-| `final_input` | Source language text (confirmed, speech ended) |
-| `partial_output` | Translation text (in progress) |
-| `final_output` | Translation text (confirmed) |
+| `partial_input` | Source language text building up as speaker talks |
+| `final_input` | Source text confirmed (speech ended) |
+| `partial_output` | Translation text streaming word-by-word (does NOT wait for full sentence) |
+| `final_output` | Full translation confirmed |
 | `state` | Agent state: `listening`, `thinking`, `speaking` |
 | `turn_complete` | One translation turn finished |
 
