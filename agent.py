@@ -37,7 +37,7 @@ from transcript_server import broadcast, start_server as start_transcript_server
 
 load_dotenv()
 logger = logging.getLogger("translator")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=__import__("sys").stderr)
 
 # ── Configuration ────────────────────────────────────────────────────────────
 

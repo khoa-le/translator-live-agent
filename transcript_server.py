@@ -49,47 +49,56 @@ _YELLOW = "\033[33m"
 _DIM = "\033[2m"
 _BOLD = "\033[1m"
 _RESET = "\033[0m"
+_ERASE_LINE = "\033[2K"  # erase entire current line
 
-_last_input = ""
-_last_output = ""
+import sys
+
+_last_phase = ""  # track current display phase to avoid conflicts
+
+
+def _write(text: str, newline: bool = False) -> None:
+    """Write to stderr to avoid conflict with logger output on stdout."""
+    sys.stderr.write(f"{_ERASE_LINE}\r{text}")
+    if newline:
+        sys.stderr.write("\n")
+    sys.stderr.flush()
 
 
 def print_transcript(event: dict[str, Any]) -> None:
-    """Print transcript event to terminal with colors."""
-    global _last_input, _last_output
+    """Print transcript event to terminal with colors.
+
+    Uses \\033[2K (erase line) + \\r to cleanly overwrite partial updates.
+    Writes to stderr so logger output on stdout doesn't interleave.
+    """
+    global _last_phase
 
     etype = event.get("type", "")
     text = event.get("text", "")
 
     if etype == "partial_input":
-        # Overwrite current line with partial input
-        display = f"{_DIM}{_CYAN}[听] {text}{_RESET}"
-        print(f"\r{display}    ", end="", flush=True)
-        _last_input = text
+        _last_phase = "input"
+        _write(f"{_DIM}{_CYAN}[听] {text}{_RESET}")
 
     elif etype == "final_input":
-        # Final input on its own line
-        print(f"\r{_CYAN}{_BOLD}[源] {text}{_RESET}    ")
-        _last_input = ""
+        _last_phase = "input_done"
+        _write(f"{_CYAN}{_BOLD}[源] {text}{_RESET}", newline=True)
 
     elif etype == "partial_output":
-        # Overwrite current line with partial output
-        display = f"{_DIM}{_GREEN}[译] {text}{_RESET}"
-        print(f"\r{display}    ", end="", flush=True)
-        _last_output = text
+        _last_phase = "output"
+        _write(f"{_DIM}{_GREEN}[译] {text}{_RESET}")
 
     elif etype == "final_output":
-        # Final output on its own line
-        print(f"\r{_GREEN}{_BOLD}[翻] {text}{_RESET}    ")
-        _last_output = ""
+        _last_phase = "output_done"
+        _write(f"{_GREEN}{_BOLD}[翻] {text}{_RESET}", newline=True)
 
     elif etype == "state":
         agent_state = event.get("agent", "")
-        if agent_state == "thinking":
-            print(f"\r{_YELLOW}  ⋯ translating...{_RESET}", end="", flush=True)
+        if agent_state == "thinking" and _last_phase in ("input_done", "input"):
+            _write(f"{_YELLOW}  ⋯ translating...{_RESET}")
 
     elif etype == "turn_complete":
-        print(f"{_DIM}{'─' * 50}{_RESET}")
+        _last_phase = ""
+        _write(f"{_DIM}{'─' * 50}{_RESET}", newline=True)
 
 
 # ── WebSocket server ─────────────────────────────────────────────────────────
